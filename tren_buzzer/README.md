@@ -1,28 +1,34 @@
 # tren_buzzer
 
-Proyecto PlatformIO para ESP32 que reproduce sonidos (tren, bocina de barco) en una bocina Bluetooth externa, disparados desde una página web que corre en la PC. El ESP32 es cliente WiFi (no access point) y cliente Bluetooth A2DP (fuente de audio). El buzzer en GPIO16 (sirena por PWM) y el receptor de control remoto IR quedaron como firmwares anteriores en el historial de git; ya no es lo que corre actualmente.
+Proyecto PlatformIO para ESP32 que reproduce sonidos en una bocina Bluetooth externa, transmitidos **en vivo** (streaming) desde una biblioteca de MP3 en la PC — agregar un sonido nuevo es solo copiar el archivo a `sounds/`, sin recompilar ni reflashear el ESP32. El ESP32 es cliente WiFi (no access point) y cliente Bluetooth A2DP (fuente de audio). El buzzer en GPIO16 (sirena por PWM) y el receptor de control remoto IR quedaron como firmwares anteriores en el historial de git; ya no es lo que corre actualmente.
 
 **⚠️ Bloqueado por hardware — ver "Problema de alimentación" abajo.** El código compila y sube bien, pero el ESP32 entra en bucle de reinicio (brownout) al activar WiFi+Bluetooth simultáneamente alimentado desde el puerto USB de la PC. No se ha podido validar en hardware real todavía.
 
-## Arquitectura
+## Arquitectura (streaming en vivo)
 
 ```
-Celular/navegador --HTTP--> pc_server/app.py (PC, puerto 5000)
-                                   |
+Celular/navegador --HTTP--> pc_server/app.py (PC, puerto 5000) --lee de--> sounds/*.mp3
+                                   |                                  (decodificados al vuelo con gstreamer)
                                    | ESP32 hace polling GET /should_play cada 500ms
                                    v
-                              ESP32 (WiFi STA + Bluetooth A2DP source)
+                              ESP32 (WiFi STA)
+                                   |  tarea en background (streamTask) pide GET /stream?file=<nombre>
+                                   |  y llena un buffer circular de 64KB con el PCM que va llegando
+                                   v
+                       BluetoothA2DPSource (consume del buffer circular)
                                    |
                                    v
-                          Bocina Bluetooth externa ("19-3010")
+                          Bocina Bluetooth externa (nombre en SPEAKER_BT_NAME)
 ```
 
-- **`pc_server/app.py`**: servidor HTTP simple (sin dependencias, `http.server` de la librería estándar) que corre en la PC. Sirve una página en `/` con un botón por sonido (`SOUNDS = ["tren", "barco"]`). `/play?sound=<nombre>` marca ese sonido como pendiente; `/should_play` lo devuelve una vez y lo limpia (polling, no websockets).
-- **`src/main.cpp`**: el ESP32 se conecta a la red WiFi existente (`WIFI_SSID`/`WIFI_PASSWORD`) y a la bocina Bluetooth por nombre. Hace polling a `SHOULD_PLAY_URL` (IP de la PC) cada `POLL_INTERVAL_MS`; si la respuesta coincide con el nombre de un sonido en el arreglo `sounds[]`, lo reproduce una vez vía el callback `get_sound_data` del A2DP source, y manda silencio el resto del tiempo.
-- **`sounds/`**: MP3 originales guardados como referencia (`tren-7.mp3`, `bocina-barco.mp3`).
-- **`tools/convert_sound.py`**: convierte un MP3 nuevo a PCM 44.1kHz/16-bit estéreo y lo agrega a `src/audio_data.cpp`/`include/audio_data.h`. Uso: `python3 tools/convert_sound.py <nombre_variable> sounds/<archivo>.mp3` (requiere `gst-launch-1.0` con plugin `mpg123audiodec` o `avdec_mp3` para decodificar MP3). Para agregar un sonido nuevo hay que además: 1) agregarlo a `SOUNDS` en `pc_server/app.py`, 2) agregarlo al arreglo `sounds[]` en `src/main.cpp`.
+- **`pc_server/app.py`**: servidor HTTP simple (sin dependencias, `http.server` de la librería estándar). `/` lista automáticamente los MP3 que haya en `sounds/` y muestra un botón por cada uno. `/play?file=<nombre>` marca ese archivo como pendiente. `/should_play` lo devuelve una vez (y lo limpia) — así el ESP32 sabe qué reproducir vía polling, sin necesitar websockets. `/stream?file=<nombre>` decodifica el MP3 al vuelo con `gst-launch-1.0` (pipeline `decodebin ! audioconvert ! audioresample` a PCM S16LE 44.1kHz estéreo) y lo manda como el cuerpo de la respuesta HTTP sin `Content-Length` (`Connection: close`), transmitiendo los bytes a medida que el proceso de gstreamer los produce.
+- **`src/main.cpp`**:
+  - `loop()` hace polling a `SHOULD_PLAY_URL` cada `POLL_INTERVAL_MS` y, si hay un archivo pendiente, lo pasa a una tarea de FreeRTOS (`streamTask`) corriendo en el otro núcleo.
+  - `streamTask` abre una conexión HTTP a `STREAM_URL_BASE?file=<nombre>` y va empujando los bytes que llegan a un buffer circular (`ringBuf`, 64KB) sin bloquear el audio.
+  - El callback de audio del A2DP (`get_sound_data`) solo lee de ese buffer circular (rápido, no bloqueante); si no hay datos disponibles manda silencio, y si además el stream ya terminó (`streamActive == false`), detiene la reproducción.
+- **`sounds/`**: biblioteca de MP3 — agregar un sonido nuevo es copiar el archivo aquí; aparece automáticamente en la página y se puede pedir por streaming sin tocar el firmware.
 
-**Importante sobre particiones:** el audio embebido + el stack Bluetooth superan los 1.3MB de la partición de app por defecto. Por eso `platformio.ini` usa `board_build.partitions = huge_app.csv` (da ~3MB a la app, sin slot OTA). Si se cambia este esquema de particiones en un ESP32 que ya tenía otro, hay que borrar la flash completa (`pio run --target erase`) antes de subir, o puede quedar en un estado inconsistente.
+**Importante sobre particiones:** aunque ya no se embebe audio en flash, el stack de Bluetooth clásico + WiFi por sí solos superan los 1.3MB de la partición de app por defecto. Por eso `platformio.ini` usa `board_build.partitions = huge_app.csv` (da ~3MB a la app, sin slot OTA). Si se cambia este esquema de particiones en un ESP32 que ya tenía otro, hay que borrar la flash completa (`pio run --target erase`) antes de subir, o puede quedar en un estado inconsistente.
 
 ## Problema de alimentación (sin resolver)
 
