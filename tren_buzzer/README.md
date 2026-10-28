@@ -1,30 +1,34 @@
 # tren_buzzer
 
-Proyecto PlatformIO para ESP32 que controla un buzzer activo/pasivo por PWM (LEDC). Pensado como base para una alarma de paso de tren: hoy el firmware es un test de sonido (sirena tipo alarma aérea); la lógica real de detección (sensor IR) todavía no está integrada.
+Proyecto PlatformIO para ESP32 que controla un buzzer activo/pasivo por PWM (LEDC), activado por un receptor de control remoto IR. Pensado como base para una alarma de paso de tren: cualquier botón de un control remoto IR activa/desactiva una sirena tipo alarma aérea.
 
 ## Hardware
 
 - Placa: ESP32 (genérico, `board = esp32dev`)
 - Buzzer: conectado a **GPIO 16**, manejado por PWM vía `ledcAttach`/`ledcWriteTone`
-- Sensor IR reflectivo (pendiente de integrar): módulo de 3 pines reutilizado de un ventilador (detecta el paso de un objeto frente a él, p. ej. aspas)
+- Receptor IR (componente marcado `XB336T`, familia TSOP/VS1838B — demodulador de 38kHz para controles remotos, reutilizado de un ventilador): 3 pines
   - VCC → 3V3
   - GND → GND
-  - OUT → GPIO4 (propuesto, libre)
+  - OUT → **GPIO 4**
+
+**Nota sobre el sensor:** este componente NO es un sensor de proximidad/reflexión — es un receptor que decodifica señales IR moduladas a 38kHz, como las que emite cualquier control remoto doméstico. No sirve para detectar directamente el paso de un objeto (tren, aspa) a menos que ese objeto emita o refleje una señal IR modulada a 38kHz. Por eso la lógica actual lo usa como lo que realmente es: un receptor de control remoto.
 
 ## Estado actual del firmware (`src/main.cpp`)
 
-El `loop()` genera una sirena continua: barre la frecuencia del buzzer entre 400Hz y 1200Hz subiendo y bajando (`sweep()`), simulando una alarma tipo sirena de ataque aéreo. No depende de ningún sensor todavía.
+Usa la librería `IRremote` para decodificar cualquier señal recibida en GPIO4:
+- Cada vez que se detecta una pulsación de botón de un control remoto (cualquier botón, de cualquier protocolo), se alterna el estado `alarmOn`.
+- Mientras `alarmOn` esté activo, el buzzer suena una sirena continua (barrido de frecuencia entre 400Hz y 1200Hz, subiendo y bajando).
+- Al desactivarse, el buzzer se apaga de inmediato.
 
 Parámetros ajustables al inicio del archivo:
 - `FREQ_MIN` / `FREQ_MAX`: rango de frecuencias del barrido
 - `STEP`: tamaño de paso en Hz por iteración
 - `STEP_DELAY_MS`: velocidad del barrido (menor = sirena más rápida)
 
-## Pendiente (lógica real del tren)
+## Pendiente
 
-Falta definir y conectar:
-1. Lectura del sensor IR en GPIO4 (`digitalRead`)
-2. Regla de disparo: qué hace el buzzer cuando el sensor detecta algo (alarma continua mientras detecta, un bip por pulso, o alarma con retardo tras la última detección)
+- Si se quiere detectar el paso físico real del tren (no solo encender/apagar con un control), hace falta un sensor distinto: un módulo reflectivo simple (p. ej. TCRT5000 o fotointerruptor) en vez de este receptor de control remoto.
+- Evaluar si conviene distinguir botones específicos del control (usando `IrReceiver.decodedIRData.command`) en vez de que cualquier botón alterne la alarma.
 
 ## Compilar y subir
 
