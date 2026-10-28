@@ -1,34 +1,32 @@
 # tren_buzzer
 
-Proyecto PlatformIO para ESP32 que controla un buzzer activo/pasivo por PWM (LEDC), activado por un receptor de control remoto IR. Pensado como base para una alarma de paso de tren: cualquier botón de un control remoto IR activa/desactiva una sirena tipo alarma aérea.
+Proyecto PlatformIO para ESP32 que controla un buzzer activo/pasivo por PWM (LEDC). Pensado como base para una alarma de paso de tren. Por ahora el firmware activo es solo el test de sonido (sirena tipo alarma aérea); la integración del sensor IR quedó pausada por un problema de hardware sin resolver (ver abajo).
 
 ## Hardware
 
 - Placa: ESP32 (genérico, `board = esp32dev`)
 - Buzzer: conectado a **GPIO 16**, manejado por PWM vía `ledcAttach`/`ledcWriteTone`
-- Receptor IR (componente marcado `XB336T`, familia TSOP/VS1838B — demodulador de 38kHz para controles remotos, reutilizado de un ventilador): 3 pines
-  - VCC → 3V3
-  - GND → GND
-  - OUT → **GPIO 4**
-
-**Nota sobre el sensor:** este componente NO es un sensor de proximidad/reflexión — es un receptor que decodifica señales IR moduladas a 38kHz, como las que emite cualquier control remoto doméstico. No sirve para detectar directamente el paso de un objeto (tren, aspa) a menos que ese objeto emita o refleje una señal IR modulada a 38kHz. Por eso la lógica actual lo usa como lo que realmente es: un receptor de control remoto.
 
 ## Estado actual del firmware (`src/main.cpp`)
 
-Usa la librería `IRremote` para decodificar cualquier señal recibida en GPIO4:
-- Cada vez que se detecta una pulsación de botón de un control remoto (cualquier botón, de cualquier protocolo), se alterna el estado `alarmOn`.
-- Mientras `alarmOn` esté activo, el buzzer suena una sirena continua (barrido de frecuencia entre 400Hz y 1200Hz, subiendo y bajando).
-- Al desactivarse, el buzzer se apaga de inmediato.
+El `loop()` genera una sirena continua: barre la frecuencia del buzzer entre 400Hz y 1200Hz subiendo y bajando, sin depender de ningún sensor.
 
 Parámetros ajustables al inicio del archivo:
 - `FREQ_MIN` / `FREQ_MAX`: rango de frecuencias del barrido
 - `STEP`: tamaño de paso en Hz por iteración
 - `STEP_DELAY_MS`: velocidad del barrido (menor = sirena más rápida)
 
-## Pendiente
+## Receptor IR (en pausa, no integrado en el firmware activo)
 
-- Si se quiere detectar el paso físico real del tren (no solo encender/apagar con un control), hace falta un sensor distinto: un módulo reflectivo simple (p. ej. TCRT5000 o fotointerruptor) en vez de este receptor de control remoto.
-- Evaluar si conviene distinguir botones específicos del control (usando `IrReceiver.decodedIRData.command`) en vez de que cualquier botón alterne la alarma.
+Se intentó integrar un receptor IR (componente marcado `XB336T`, familia TSOP/VS1838B — demodulador de 38kHz para controles remotos, reutilizado de un ventilador), pensado como entrada para activar/desactivar la alarma con cualquier control remoto (código de referencia con la librería `IRremote` quedó en el historial de git, commit `7aa53c5`).
+
+**Hallazgos del diagnóstico de hardware:**
+- El componente NO es un sensor de proximidad/reflexión — es un receptor que decodifica señales IR moduladas a 38kHz, como las que emite un control remoto doméstico. No detecta el paso de un objeto físico (tren, aspa) a menos que ese objeto emita/refleje IR modulado a 38kHz.
+- Al conectar VCC/GND inicialmente, el ESP32 entraba en un bucle de reinicio (brownout) — se aisló probando primero sin el sensor (estable), luego conectando solo VCC+GND (seguía en bucle), y variando polaridad (seguía en bucle). El bucle de reset en sí no daña la placa (el detector de bajo voltaje solo resetea de forma segura).
+- Finalmente, conectando VCC/GND en las patas 2 y 3 (según diagrama del componente) la placa quedó estable. Con OUT (pata 1) conectado a GPIO4, la lectura cruda (`digitalRead`) se mantiene estable en `0`, pero no se detectó ninguna transición a `1` al presionar botones de un control de A/C a distancia normal.
+- Pendiente probar: acercar el control a 2-5cm del domo del receptor, o medir con multímetro en modo voltaje DC directo sobre la pata OUT mientras se presiona el control, para descartar que el fotodiodo esté dañado (posible por calor al desoldarlo del ventilador).
+
+**Para reanudar este trabajo:** recuperar el código de `IRremote` del commit `7aa53c5`, confirmar primero con multímetro que el pin OUT reacciona ante un control remoto, y solo entonces volver a conectarlo al ESP32.
 
 ## Compilar y subir
 

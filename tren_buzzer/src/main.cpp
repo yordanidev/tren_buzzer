@@ -1,8 +1,6 @@
 #include <Arduino.h>
-#include <IRremote.hpp>
 
 #define BUZZER 16
-#define IR_RECEIVE_PIN 4
 
 const int FREQ_MIN = 400;
 const int FREQ_MAX = 1200;
@@ -12,29 +10,14 @@ const unsigned long STEP_DELAY_MS = 8;
 int freq = FREQ_MIN;
 int direction = 1;
 unsigned long lastStepTime = 0;
-bool alarmOn = false;
 
 void setup() {
   ledcAttach(BUZZER, 2000, 8);
   Serial.begin(115200);
-  IrReceiver.begin(IR_RECEIVE_PIN, ENABLE_LED_FEEDBACK);
-  Serial.println("Receptor IR listo en GPIO4. Cualquier boton del control activa/desactiva la alarma.");
+  Serial.println("Sirena alarma aerea en GPIO 16");
 }
 
 void loop() {
-  if (IrReceiver.decode()) {
-    alarmOn = !alarmOn;
-    Serial.println(alarmOn ? "Control remoto: ALARMA ON" : "Control remoto: ALARMA OFF");
-    if (!alarmOn) {
-      ledcWriteTone(BUZZER, 0);
-      freq = FREQ_MIN;
-      direction = 1;
-    }
-    IrReceiver.resume();
-  }
-
-  if (!alarmOn) return;
-
   unsigned long now = millis();
   if (now - lastStepTime >= STEP_DELAY_MS) {
     lastStepTime = now;
