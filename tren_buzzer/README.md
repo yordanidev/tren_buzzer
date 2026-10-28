@@ -1,25 +1,36 @@
 # tren_buzzer
 
-Proyecto PlatformIO para ESP32 que reproduce un sonido de tren en una bocina Bluetooth, controlado desde una página web que el propio ESP32 sirve por WiFi. El buzzer en GPIO16 (sirena por PWM) quedó como firmware anterior en el historial de git; ya no es lo que corre actualmente.
+Proyecto PlatformIO para ESP32 que reproduce sonidos (tren, bocina de barco) en una bocina Bluetooth externa, disparados desde una página web que corre en la PC. El ESP32 es cliente WiFi (no access point) y cliente Bluetooth A2DP (fuente de audio). El buzzer en GPIO16 (sirena por PWM) y el receptor de control remoto IR quedaron como firmwares anteriores en el historial de git; ya no es lo que corre actualmente.
 
-## Hardware
+**⚠️ Bloqueado por hardware — ver "Problema de alimentación" abajo.** El código compila y sube bien, pero el ESP32 entra en bucle de reinicio (brownout) al activar WiFi+Bluetooth simultáneamente alimentado desde el puerto USB de la PC. No se ha podido validar en hardware real todavía.
 
-- Placa: ESP32 (genérico, `board = esp32dev`, chip ESP32-D0WD-V3 — soporta Bluetooth clásico)
-- Bocina Bluetooth externa (emparejada por nombre, ver `AP_SSID`/nombre de la bocina en `main.cpp`)
-- Sin sensores conectados actualmente
+## Arquitectura
 
-## Estado actual del firmware (`src/main.cpp`)
+```
+Celular/navegador --HTTP--> pc_server/app.py (PC, puerto 5000)
+                                   |
+                                   | ESP32 hace polling GET /should_play cada 500ms
+                                   v
+                              ESP32 (WiFi STA + Bluetooth A2DP source)
+                                   |
+                                   v
+                          Bocina Bluetooth externa ("19-3010")
+```
 
-1. El ESP32 crea su propio punto de acceso WiFi (`AP_SSID`/`AP_PASSWORD` al inicio del archivo) y sirve una página con un botón ("SONAR TREN") en `/`.
-2. Al presionar el botón desde el celular (conectado a esa red WiFi), se llama a `/play`, que activa la bandera `isPlaying`.
-3. En paralelo, el ESP32 se conecta por Bluetooth clásico (A2DP source, librería `ESP32-A2DP` + `arduino-audio-tools`) a la bocina por nombre (`"19-3010"` actualmente, ajustar al nombre real de la bocina).
-4. El callback `get_sound_data` transmite el audio embebido (`train_pcm` en `src/audio_data.cpp`, generado a partir de un MP3 convertido a PCM 44.1kHz/16-bit estéreo) una sola vez por cada pulsación del botón; el resto del tiempo manda silencio para mantener el enlace A2DP activo sin repetir el sonido en loop.
+- **`pc_server/app.py`**: servidor HTTP simple (sin dependencias, `http.server` de la librería estándar) que corre en la PC. Sirve una página en `/` con un botón por sonido (`SOUNDS = ["tren", "barco"]`). `/play?sound=<nombre>` marca ese sonido como pendiente; `/should_play` lo devuelve una vez y lo limpia (polling, no websockets).
+- **`src/main.cpp`**: el ESP32 se conecta a la red WiFi existente (`WIFI_SSID`/`WIFI_PASSWORD`) y a la bocina Bluetooth por nombre. Hace polling a `SHOULD_PLAY_URL` (IP de la PC) cada `POLL_INTERVAL_MS`; si la respuesta coincide con el nombre de un sonido en el arreglo `sounds[]`, lo reproduce una vez vía el callback `get_sound_data` del A2DP source, y manda silencio el resto del tiempo.
+- **`sounds/`**: MP3 originales guardados como referencia (`tren-7.mp3`, `bocina-barco.mp3`).
+- **`tools/convert_sound.py`**: convierte un MP3 nuevo a PCM 44.1kHz/16-bit estéreo y lo agrega a `src/audio_data.cpp`/`include/audio_data.h`. Uso: `python3 tools/convert_sound.py <nombre_variable> sounds/<archivo>.mp3` (requiere `gst-launch-1.0` con plugin `mpg123audiodec` o `avdec_mp3` para decodificar MP3). Para agregar un sonido nuevo hay que además: 1) agregarlo a `SOUNDS` en `pc_server/app.py`, 2) agregarlo al arreglo `sounds[]` en `src/main.cpp`.
 
-**Regenerar el audio embebido** (si se cambia el MP3 de origen): convertir a WAV PCM 44.1kHz/16-bit estéreo (p. ej. con `gst-launch-1.0 filesrc ! decodebin ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=44100 ! wavenc ! filesink`), y luego generar `src/audio_data.cpp`/`include/audio_data.h` con un script que vuelque los bytes crudos del WAV (sin el header de 44 bytes) como arreglo `const uint8_t`.
+**Importante sobre particiones:** el audio embebido + el stack Bluetooth superan los 1.3MB de la partición de app por defecto. Por eso `platformio.ini` usa `board_build.partitions = huge_app.csv` (da ~3MB a la app, sin slot OTA). Si se cambia este esquema de particiones en un ESP32 que ya tenía otro, hay que borrar la flash completa (`pio run --target erase`) antes de subir, o puede quedar en un estado inconsistente.
 
-**Importante sobre particiones:** el audio embebido + el stack Bluetooth superan los 1.3MB de la partición de app por defecto. Por eso `platformio.ini` usa `board_build.partitions = huge_app.csv` (da ~3MB a la app, sin slot OTA).
+## Problema de alimentación (sin resolver)
 
-**Importante sobre alimentación:** activar el Bluetooth clásico demanda un pico de corriente que puede causar brownout (bucle de reinicio) si el ESP32 se alimenta de un puerto/hub USB débil. Conectar directo a un puerto USB del equipo, no a un hub.
+Activar WiFi + Bluetooth clásico simultáneamente demanda un pico de corriente que el puerto USB de la PC (incluso directo, sin hub) no puede entregar de forma estable. Síntoma: bucle de reinicio (brownout) continuo, visible como texto repetido tipo `try 0x4008059c` o como ruido binario en el serial (según en qué punto del arranque ocurre el reset). No es daño a la placa — el detector de bajo voltaje solo resetea de forma segura — pero impide que el firmware llegue a correr.
+
+Se descartó que fuera un problema de particiones corruptas (se probó borrando la flash completa y resubiendo; el bucle persistió igual).
+
+**Siguiente paso para desbloquear:** alimentar el ESP32 con un cargador de pared USB (5V/1A o más) en vez del puerto de la PC, o agregar un capacitor electrolítico de 470-1000µF entre 3V3 y GND cerca de la placa para absorber los picos de corriente.
 
 ## Receptor IR (en pausa, no integrado en el firmware activo)
 

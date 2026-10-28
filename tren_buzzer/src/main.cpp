@@ -1,55 +1,40 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebServer.h>
+#include <HTTPClient.h>
 #include "BluetoothA2DPSource.h"
 #include "audio_data.h"
+#include "secrets.h"
 
-const char *AP_SSID = "TrenESP32";
-const char *AP_PASSWORD = "tren12345";
+const unsigned long POLL_INTERVAL_MS = 500;
+
+struct Sound {
+  const char *name;
+  const uint8_t *pcm;
+  uint32_t len;
+};
+
+Sound sounds[] = {
+  {"tren", tren_pcm, tren_pcm_len},
+  {"barco", barco_pcm, barco_pcm_len},
+};
+const int SOUND_COUNT = sizeof(sounds) / sizeof(sounds[0]);
 
 BluetoothA2DPSource a2dp_source;
-WebServer server(80);
-
 uint32_t pos = 0;
 bool isPlaying = false;
-
-const char INDEX_HTML[] = R"HTML(
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tren ESP32</title>
-<style>
-body { font-family: sans-serif; text-align: center; background: #111; color: #eee; padding-top: 60px; }
-button { font-size: 28px; padding: 30px 60px; border-radius: 16px; border: none; background: #e63946; color: white; }
-button:active { background: #b3242f; }
-</style>
-</head>
-<body>
-<h1>Alarma de tren</h1>
-<button onclick="playSound()">SONAR TREN</button>
-<p id="status"></p>
-<script>
-function playSound() {
-  document.getElementById('status').innerText = 'Reproduciendo...';
-  fetch('/play').then(() => {
-    document.getElementById('status').innerText = 'Listo';
-  });
-}
-</script>
-</body>
-</html>
-)HTML";
+int currentSound = 0;
+unsigned long lastPoll = 0;
 
 int32_t get_sound_data(uint8_t *data, int32_t byteCount) {
   if (!isPlaying) {
     memset(data, 0, byteCount);
     return byteCount;
   }
+  const Sound &s = sounds[currentSound];
   for (int32_t i = 0; i < byteCount; i++) {
-    data[i] = train_pcm[pos];
+    data[i] = s.pcm[pos];
     pos++;
-    if (pos >= train_pcm_len) {
+    if (pos >= s.len) {
       pos = 0;
       isPlaying = false;
       memset(data + i + 1, 0, byteCount - i - 1);
@@ -59,28 +44,45 @@ int32_t get_sound_data(uint8_t *data, int32_t byteCount) {
   return byteCount;
 }
 
-void handlePlay() {
-  pos = 0;
-  isPlaying = true;
-  server.send(200, "text/plain", "ok");
-}
-
 void setup() {
   Serial.begin(115200);
 
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
-  Serial.print("WiFi AP listo. IP: ");
-  Serial.println(WiFi.softAPIP());
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Conectando a WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(300);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("WiFi conectado, IP: ");
+  Serial.println(WiFi.localIP());
 
-  server.on("/", []() { server.send(200, "text/html", INDEX_HTML); });
-  server.on("/play", handlePlay);
-  server.begin();
-
-  Serial.println("Conectando a bocina Bluetooth 19-3010...");
+  Serial.print("Conectando a bocina Bluetooth ");
+  Serial.println(SPEAKER_BT_NAME);
   a2dp_source.set_data_callback(get_sound_data);
-  a2dp_source.start("19-3010");
+  a2dp_source.start(SPEAKER_BT_NAME);
 }
 
 void loop() {
-  server.handleClient();
+  unsigned long now = millis();
+  if (now - lastPoll >= POLL_INTERVAL_MS) {
+    lastPoll = now;
+    HTTPClient http;
+    http.begin(SHOULD_PLAY_URL);
+    int code = http.GET();
+    if (code == 200) {
+      String body = http.getString();
+      for (int i = 0; i < SOUND_COUNT; i++) {
+        if (body == sounds[i].name) {
+          pos = 0;
+          currentSound = i;
+          isPlaying = true;
+          Serial.print("Reproduciendo: ");
+          Serial.println(sounds[i].name);
+          break;
+        }
+      }
+    }
+    http.end();
+  }
 }
