@@ -1,20 +1,25 @@
 # tren_buzzer
 
-Proyecto PlatformIO para ESP32 que controla un buzzer activo/pasivo por PWM (LEDC). Pensado como base para una alarma de paso de tren. Por ahora el firmware activo es solo el test de sonido (sirena tipo alarma aérea); la integración del sensor IR quedó pausada por un problema de hardware sin resolver (ver abajo).
+Proyecto PlatformIO para ESP32 que reproduce un sonido de tren en una bocina Bluetooth, controlado desde una página web que el propio ESP32 sirve por WiFi. El buzzer en GPIO16 (sirena por PWM) quedó como firmware anterior en el historial de git; ya no es lo que corre actualmente.
 
 ## Hardware
 
-- Placa: ESP32 (genérico, `board = esp32dev`)
-- Buzzer: conectado a **GPIO 16**, manejado por PWM vía `ledcAttach`/`ledcWriteTone`
+- Placa: ESP32 (genérico, `board = esp32dev`, chip ESP32-D0WD-V3 — soporta Bluetooth clásico)
+- Bocina Bluetooth externa (emparejada por nombre, ver `AP_SSID`/nombre de la bocina en `main.cpp`)
+- Sin sensores conectados actualmente
 
 ## Estado actual del firmware (`src/main.cpp`)
 
-El `loop()` genera una sirena continua: barre la frecuencia del buzzer entre 400Hz y 1200Hz subiendo y bajando, sin depender de ningún sensor.
+1. El ESP32 crea su propio punto de acceso WiFi (`AP_SSID`/`AP_PASSWORD` al inicio del archivo) y sirve una página con un botón ("SONAR TREN") en `/`.
+2. Al presionar el botón desde el celular (conectado a esa red WiFi), se llama a `/play`, que activa la bandera `isPlaying`.
+3. En paralelo, el ESP32 se conecta por Bluetooth clásico (A2DP source, librería `ESP32-A2DP` + `arduino-audio-tools`) a la bocina por nombre (`"19-3010"` actualmente, ajustar al nombre real de la bocina).
+4. El callback `get_sound_data` transmite el audio embebido (`train_pcm` en `src/audio_data.cpp`, generado a partir de un MP3 convertido a PCM 44.1kHz/16-bit estéreo) una sola vez por cada pulsación del botón; el resto del tiempo manda silencio para mantener el enlace A2DP activo sin repetir el sonido en loop.
 
-Parámetros ajustables al inicio del archivo:
-- `FREQ_MIN` / `FREQ_MAX`: rango de frecuencias del barrido
-- `STEP`: tamaño de paso en Hz por iteración
-- `STEP_DELAY_MS`: velocidad del barrido (menor = sirena más rápida)
+**Regenerar el audio embebido** (si se cambia el MP3 de origen): convertir a WAV PCM 44.1kHz/16-bit estéreo (p. ej. con `gst-launch-1.0 filesrc ! decodebin ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,channels=2,rate=44100 ! wavenc ! filesink`), y luego generar `src/audio_data.cpp`/`include/audio_data.h` con un script que vuelque los bytes crudos del WAV (sin el header de 44 bytes) como arreglo `const uint8_t`.
+
+**Importante sobre particiones:** el audio embebido + el stack Bluetooth superan los 1.3MB de la partición de app por defecto. Por eso `platformio.ini` usa `board_build.partitions = huge_app.csv` (da ~3MB a la app, sin slot OTA).
+
+**Importante sobre alimentación:** activar el Bluetooth clásico demanda un pico de corriente que puede causar brownout (bucle de reinicio) si el ESP32 se alimenta de un puerto/hub USB débil. Conectar directo a un puerto USB del equipo, no a un hub.
 
 ## Receptor IR (en pausa, no integrado en el firmware activo)
 
