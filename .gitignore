@@ -1,2 +1,7 @@
 .pio/
 bin/
+tren_buzzer/.vscode/.browse.c_cpp.db*
+tren_buzzer/.vscode/c_cpp_properties.json
+tren_buzzer/.vscode/launch.json
+tren_buzzer/.vscode/ipch
+tren_buzzer/include/secrets.h
