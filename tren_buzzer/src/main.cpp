@@ -5,8 +5,15 @@
 
 #define BUTTON_PIN 4
 #define DEBOUNCE_MS 50
-#define LONG_PRESS_MS 3000
+#define LONG_PRESS_MS 8000
 #define PAIRING_TIMEOUT_MS 30000
+
+#define CONFIRM_SAMPLE_RATE 44100
+#define CONFIRM_BEEP1_FREQ 600
+#define CONFIRM_BEEP2_FREQ 900
+#define CONFIRM_BEEP_SAMPLES 6615   // 150ms
+#define CONFIRM_GAP_SAMPLES 2205    // 50ms
+#define CONFIRM_TOTAL_SAMPLES (CONFIRM_BEEP_SAMPLES * 2 + CONFIRM_GAP_SAMPLES)
 
 Preferences prefs;
 BluetoothA2DPSource a2dp_source;
@@ -24,7 +31,40 @@ unsigned long pairingStartTime = 0;
 esp_bd_addr_t foundAddress;
 volatile bool addressCaptured = false;
 
+bool playingConfirmation = false;
+uint32_t confirmSampleIndex = 0;
+
+int16_t confirmationSample(uint32_t idx) {
+  if (idx < CONFIRM_BEEP_SAMPLES) {
+    double t = (double)idx / CONFIRM_SAMPLE_RATE;
+    return (int16_t)(8000 * sin(2 * PI * CONFIRM_BEEP1_FREQ * t));
+  } else if (idx < CONFIRM_BEEP_SAMPLES + CONFIRM_GAP_SAMPLES) {
+    return 0;
+  } else {
+    double t = (double)(idx - CONFIRM_BEEP_SAMPLES - CONFIRM_GAP_SAMPLES) / CONFIRM_SAMPLE_RATE;
+    return (int16_t)(8000 * sin(2 * PI * CONFIRM_BEEP2_FREQ * t));
+  }
+}
+
 int32_t get_sound_data(uint8_t *data, int32_t byteCount) {
+  if (playingConfirmation) {
+    int32_t i = 0;
+    for (; i + 3 < byteCount; i += 4) {
+      int16_t sample = confirmationSample(confirmSampleIndex);
+      data[i] = sample & 0xFF;
+      data[i + 1] = (sample >> 8) & 0xFF;
+      data[i + 2] = sample & 0xFF;
+      data[i + 3] = (sample >> 8) & 0xFF;
+      confirmSampleIndex++;
+      if (confirmSampleIndex >= CONFIRM_TOTAL_SAMPLES) {
+        playingConfirmation = false;
+        memset(data + i + 4, 0, byteCount - i - 4);
+        return byteCount;
+      }
+    }
+    return byteCount;
+  }
+
   if (!isPlaying) {
     memset(data, 0, byteCount);
     return byteCount;
@@ -50,6 +90,14 @@ bool accept_first_device(const char *ssid, esp_bd_addr_t address, int rrsi) {
   return true;
 }
 
+void on_connection_state_changed(esp_a2d_connection_state_t state, void *obj) {
+  if (state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+    Serial.println("Bocina conectada!");
+    playingConfirmation = true;
+    confirmSampleIndex = 0;
+  }
+}
+
 void startPairingMode() {
   Serial.println("Modo de busqueda: conectando a la primera bocina disponible...");
   pairingMode = true;
@@ -65,6 +113,7 @@ void setup() {
   prefs.begin("train", false);
 
   a2dp_source.set_data_callback(get_sound_data);
+  a2dp_source.set_on_connection_state_changed(on_connection_state_changed);
 
   size_t savedLen = prefs.getBytesLength("speaker_addr");
   if (savedLen == sizeof(esp_bd_addr_t)) {
